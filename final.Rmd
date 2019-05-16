@@ -1,0 +1,279 @@
+---
+title: "Fake News Classifier"
+subtitle: "A Data Science Project"
+author: "Marcel Arnold"
+date: "3/20/2018"
+output: 
+  pdf_document: 
+    fig_caption: yes
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Information
+
+The latest hot topic in the news is fake news and many are wondering what data scientists can do to detect it, find the underlying patterns and maybe prevent it. The used Kaggle dataset contains text and metadata scraped from 244 websites and the tagging is based on the curated list of www.opensources.co
+
+*Dataset source:* www.kaggle.com/mrisdal/fake-news
+
+### Tags
+
+Open Sources uses combinations of the following tags to classify each website we assess.
+
+**Fake News (tag fake)** Sources that entirely fabricate information, disseminate deceptive content, or grossly distort actual news reports
+
+**Satire (tag satire)** Sources that use humor, irony, exaggeration, ridicule, and false information to comment on current events.
+
+**Extreme Bias (tag bias)** Sources that come from a particular point of view and may rely on propaganda, decontextualized information, and opinions distorted as facts.
+
+**Conspiracy Theory (tag conspiracy)** Sources that are well-known promoters of kooky conspiracy theories.
+
+**Rumor Mill (tag rumor)** Sources that traffic in rumors, gossip, innuendo, and unverified claims.
+
+**State News (tag state)** Sources in repressive states operating under government sanction.
+
+**Junk Science (tag junksci)** Sources that promote pseudoscience, metaphysics, naturalistic fallacies, and other scientifically dubious claims.
+
+**Hate News (tag hate)** Sources that actively promote racism, misogyny, homophobia, and other forms of discrimination.
+
+**Clickbait (tag clickbait)** Sources that provide generally credible content, but use exaggerated, misleading, or questionable headlines, social media descriptions, and/or images.
+
+**Proceed With Caution (tag unreliable)** Sources that may be reliable but whose contents require further verification.
+
+**Political (tag political)** Sources that provide generally verifiable information in support of certain points of view or political orientations.
+
+**Credible (tag reliable)** Sources that circulate news and information in a manner consistent with traditional and ethical practices in journalism.
+
+## 0. Requirements
+
+```{r,echo=TRUE ,warning=FALSE}
+library(ggplot2)
+library(caret)
+library(SnowballC)
+library(RCurl)
+library(tm)
+library(e1071)
+library(klaR)
+
+setwd("~/Dropbox/Studies/Semester 02/Data Science Development/coursework")
+
+# load data sets
+if(!exists("fnews")) {
+  fnews <- read.csv("fake.csv", header = TRUE)
+}
+sources <- read.csv(text=getURL("https://raw.githubusercontent.com/BigMcLargeHuge/opensources/master/sources/sources.csv"))
+```
+
+```{r}
+table(fnews$type)
+```
+
+Type 'bs' means that the date is unlaballed, which is why I have to re-label it with the original\\
+label source ([www.OpenSources.co]).
+
+## 1. Data pre-processing and cleansing
+
+```{r}
+# match fnews with open sources and get 'types'
+df4 <- merge(fnews, sources, by.x="site_url", by.y="X")
+
+# rename type columns
+df4$type1 <- as.factor(df4$type.y)
+
+# remove unneccessary columns
+drops <- c("uuid","type.x","X.1","Source.Notes..things.to.know..","ord_in_thread","type.y",
+           "X2nd.type","X3rd.type", "main_img_url")
+data <- df4[ , !(names(df4) %in% drops)]
+
+# remove empty labels
+data$type1 <- tolower(data$type1)
+data$type1 <- factor(data$type1)
+
+# remove non-english instances
+data <- data[(data$language=="english"),]
+
+# remove rows with N/A
+rname <- names(data)[which.max(sapply(data, function(x) sum(is.na(x))))]
+data <- data[ , !(names(data) == rname)]
+
+data$type1 <- factor(data$type1)
+
+# Labels are now fixed:
+table(data$type1)
+
+```
+
+```{r}
+# plotting the labels
+
+## bar chart
+g <- ggplot(data, aes(x=type1, fill=type1)) + geom_bar()
+g <- g + theme(axis.title.x=element_blank(),
+               axis.text.x=element_blank(),
+               axis.ticks.x=element_blank())
+g <- g + geom_text(stat='count',aes(label=..count..),vjust=-1)
+g
+
+## pie chart
+
+g <- ggplot(data, aes(x=type1, fill=type1))
+g <- g + geom_bar(width = 1) + coord_polar("x")
+g <- g + theme_light()
+g
+
+```
+
+
+
+## 2. Text Mining
+
+### 2.1 Creating corpus with articles
+
+```{r}
+dfCorpus = Corpus(VectorSource(data$text))
+dfCorpus[["1"]][["content"]]
+```
+
+### 2.2 Clean and prepare corpus
+
+```{r}
+dfCorpus <- tm_map(dfCorpus, content_transformer(tolower))
+dfCorpus <- tm_map(dfCorpus, removeNumbers)
+dfCorpus <- tm_map(dfCorpus, removePunctuation)
+
+for(j in seq(dfCorpus)) { 
+  dfCorpus[[j]] <- gsub("/", " ", dfCorpus[[j]])
+  dfCorpus[[j]] <- gsub("@", " ", dfCorpus[[j]])
+  dfCorpus[[j]] <- gsub("\\|", " ", dfCorpus[[j]])
+  dfCorpus[[j]] <- gsub("\"", " ", dfCorpus[[j]])
+  dfCorpus[[j]] <- gsub("”", " ", dfCorpus[[j]])
+  dfCorpus[[j]] <- gsub("“", " ", dfCorpus[[j]])
+  dfCorpus[[j]] <- gsub("’", " ", dfCorpus[[j]])
+  dfCorpus[[j]] <- gsub("–", " ", dfCorpus[[j]])
+  }
+
+dfCorpus <- tm_map(dfCorpus, removeWords, stopwords("english"))
+dfCorpus <- tm_map(dfCorpus, stripWhitespace)
+dfCorpus <- tm_map(dfCorpus, stemDocument)
+
+dfCorpus[["1"]][["content"]]
+
+```
+
+
+### 2.3 Convert to Document Term Matrix
+
+In order to analyse the text data I need to convert it to numerical data. Further preparations are:\\
+removing punctuations, stopwords (e.g. 'for', 'my' etc.) and reduce words to its stem (e.g. reduced > reduc).
+
+```{r}
+
+dtm <- DocumentTermMatrix(dfCorpus)
+
+```
+
+### 2.3 Explore term matrix
+
+```{r}
+# show most frequent words
+freq <- colSums(as.matrix(dtm))
+ord <- order(freq)
+freq[tail(ord)]
+
+# frequencies of frequencies
+head(table(freq), 15)
+
+```
+
+### 2.4 Remove terms with low frequency
+
+```{r}
+# Removing Sparse Terms
+
+dim(dtm)
+dtms <- removeSparseTerms(dtm, 0.9)
+dim(dtms)
+
+#inspect(dtms)
+freq <- colSums(as.matrix(dtms))
+ord <- order(freq)
+freq[tail(ord)]
+freq[head(ord)]
+
+```
+
+### 2.5 More inspections and correlations
+
+```{r}
+findFreqTerms(dtms, lowfreq=10000)
+```
+
+```{r}
+findAssocs(dtms, "peopl", corlimit=0.6)
+```
+
+```{r}
+findAssocs(dtms, "time", corlimit=0.6)
+```
+
+```{r}
+#library(Rgraphviz)
+#plot(dtms, terms=findFreqTerms(dtms, lowfreq=2000)[1:50], corThreshold=0.5)
+```
+
+
+### 2.6 Bag of Words
+
+
+## 3. Machine Learning
+
+### 3.1 Attach classification to each row
+
+```{r}
+train <- as.matrix(dtms)
+train <- cbind(train, c(0, 1))
+
+colnames(train)[ncol(train)] <- 'y'
+train <- as.data.frame(train)
+colnames(train)[ncol(train)]
+
+train$y <- as.factor(data$type1)
+```
+
+### 3.2 Split dataset
+
+```{r}
+inTrain <- createDataPartition(y=train$y,p=.7,list=FALSE)
+training <- train[inTrain,]
+testing <- train[-inTrain,]
+```
+
+### 3.3 Build training model (with Naive Bayes)
+
+```{r}
+x = training[,-ncol(train)]
+y = training$y
+
+#model = train(x,y,'nb',trControl=trainControl(method='cv',number=10))
+
+#table(predict(model$finalModel,x)$class,y)
+```
+
+### 3.4 Test model with predictions
+
+
+### 3.5 Evaluation with Confusion Matrix
+
+
+### 3.6 Tweak model
+
+
+### 3.7 Test and compare with another model
+
+
+## 4. Conclusions
+
+
